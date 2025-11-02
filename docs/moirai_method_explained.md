@@ -189,43 +189,43 @@ elif freq == 'D':  # 일 단위
 
 ### 구현: MultiInSizeLinear
 
+**⚠️ 중요: 아래는 개념적 설명입니다. 실제 구현은 `multi_in_size_linear_actual_implementation.md` 참조!**
+
+**개념적 아이디어** (이해를 위한 단순화):
+- 각 patch_size마다 별도의 linear layer
+- 입력의 patch_size에 따라 적절한 layer 선택
+
+**실제 구현** (`src/uni2ts/module/ts_embed.py`):
 ```python
-# src/uni2ts/module/ts_embed.py
-
 class MultiInSizeLinear(nn.Module):
-    def __init__(
-        self,
-        in_features: list[int],      # [8, 16, 32, 64, 128]
-        out_features: int,            # d_model = 768
-    ):
-        # 각 patch_size마다 별도의 weight
-        self.weights = nn.ParameterDict({
-            str(size): nn.Parameter(torch.randn(size, out_features))
-            for size in in_features
-        })
+    def __init__(self, in_features_ls, out_features):
+        # 하나의 큰 텐서로 모든 weight 저장!
+        self.weight = nn.Parameter(
+            torch.empty((len(in_features_ls), out_features, max(in_features_ls)))
+        )
+        # Shape: (5, 768, 128) for in_features_ls=(8,16,32,64,128)
 
-    def forward(self, x, patch_size):
-        """
-        x: (batch, seq, max_patch_size=128)
-        patch_size: (batch, seq) - 각 토큰의 실제 patch_size
+        # Mask로 유효 영역만 활성화
+        self.mask = size_to_mask(...)
+        # mask[0]: [1,1,1,1,1,1,1,1, 0,0,...,0]  # 처음 8개만
+        # mask[1]: [1,1,...,1, 0,0,...,0]        # 처음 16개만
 
-        return: (batch, seq, out_features=768)
-        """
-        # 각 토큰마다 적절한 weight 선택
-        output = []
-        for i in range(x.shape[1]):
-            ps = patch_size[i].item()  # 예: 16
-            w = self.weights[str(ps)]  # (16, 768)
-
-            # 실제 사용 부분만 선택
-            x_active = x[:, i, :ps]    # (batch, 16)
-
-            # Linear transformation
-            out = x_active @ w         # (batch, 16) @ (16, 768) → (batch, 768)
-            output.append(out)
-
-        return torch.stack(output, dim=1)  # (batch, seq, 768)
+    def forward(self, x, in_feat_size):
+        out = 0
+        # 모든 patch_size에 대해 계산 후 선택
+        for idx, feat_size in enumerate(self.in_features_ls):
+            weight_masked = self.weight[idx] * self.mask[idx]
+            match = torch.eq(in_feat_size, feat_size)
+            linear_out = einsum(weight_masked, x, "out inp, ... inp -> ... out")
+            out = out + match.unsqueeze(-1) * linear_out
+        return out
 ```
+
+**핵심 차이**:
+- ✗ nn.ParameterDict 사용 (제가 개념 설명용으로 단순화)
+- ✓ 단일 텐서 + mask 방식 (실제 구현, GPU 효율적)
+
+자세한 내용은 `docs/multi_in_size_linear_actual_implementation.md` 참조!
 
 ### 장점
 
